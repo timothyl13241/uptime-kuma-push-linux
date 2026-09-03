@@ -46,20 +46,7 @@ normalize_host() {
   fi
 }
 
-get_timeout_ms() {
-  local monitor_json="$1"
-  local default_timeout="$2"
-  local timeout
-  timeout="$(jq -r '.timeout // empty' <<<"$monitor_json")"
-
-  if [[ "$timeout" =~ ^[0-9]+$ ]]; then
-    printf '%s' "$timeout"
-  else
-    printf '%s' "$default_timeout"
-  fi
-}
-
-get_timeout_seconds() {
+get_timeout() {
   local monitor_json="$1"
   local default_timeout="$2"
   local timeout
@@ -78,7 +65,7 @@ test_port() {
 
   host="$(jq -r '.host // empty' <<<"$monitor_json")"
   port="$(jq -r '.port // empty' <<<"$monitor_json")"
-  timeout_ms="$(get_timeout_ms "$monitor_json" 2000)"
+  timeout_ms="$(get_timeout "$monitor_json" 2000)"
   timeout_seconds=$(( (timeout_ms + 999) / 1000 ))
   (( timeout_seconds < 1 )) && timeout_seconds=1
 
@@ -92,7 +79,7 @@ test_ping() {
   local host timeout_ms timeout_seconds ping_output response_time
 
   host="$(jq -r '.host // empty' <<<"$monitor_json")"
-  timeout_ms="$(get_timeout_ms "$monitor_json" 2000)"
+  timeout_ms="$(get_timeout "$monitor_json" 2000)"
   timeout_seconds=$(( (timeout_ms + 999) / 1000 ))
   (( timeout_seconds < 1 )) && timeout_seconds=1
 
@@ -120,7 +107,7 @@ test_website() {
 
   search="$(jq -r '.search // empty' <<<"$monitor_json")"
   host="$(normalize_host "$(jq -r '.host // empty' <<<"$monitor_json")")"
-  timeout_seconds="$(get_timeout_seconds "$monitor_json" 4)"
+  timeout_seconds="$(get_timeout "$monitor_json" 4)"
 
   [[ -n "$host" ]] || return 1
 
@@ -182,6 +169,8 @@ test_host() {
 
 require_command jq || exit 1
 require_command curl || exit 1
+ping_dependency_checked=false
+timeout_dependency_checked=false
 
 while true; do
   if [[ ! -f "$config_file" ]]; then
@@ -197,11 +186,17 @@ while true; do
   fi
 
   if jq -e '.monitors[]? | select((.type // "") == "ping" or any((.group // [])[]?; (.type // "") == "ping"))' "$config_file" >/dev/null 2>&1; then
-    require_command ping || exit 1
+    if [[ "$ping_dependency_checked" == "false" ]]; then
+      require_command ping || exit 1
+      ping_dependency_checked=true
+    fi
   fi
 
   if jq -e '.monitors[]? | select((.type // "") == "port" or any((.group // [])[]?; (.type // "") == "port"))' "$config_file" >/dev/null 2>&1; then
-    require_command timeout || exit 1
+    if [[ "$timeout_dependency_checked" == "false" ]]; then
+      require_command timeout || exit 1
+      timeout_dependency_checked=true
+    fi
   fi
 
   monitors_count="$(jq '.monitors | length' "$config_file" 2>/dev/null || echo 0)"
