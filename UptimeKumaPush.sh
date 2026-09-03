@@ -163,6 +163,8 @@ test_host() {
     website)
       if ping_value="$(test_website "$monitor_json")"; then
         result=0
+      else
+        ping_value=0
       fi
       ;;
     port)
