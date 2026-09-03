@@ -50,6 +50,33 @@ chmod +x ./UptimeKumaPush.sh
 ./UptimeKumaPush.sh
 ```
 
+### Run using crontab (interval scheduling)
+
+Yes — the Bash script can be run from `cron`.
+
+Recommended settings for cron use:
+
+* Set `"loop": false` in `UptimeKumaPush.json` so each cron run executes once and exits.
+* Use absolute paths in the crontab entry.
+
+Open crontab:
+
+```bash
+crontab -e
+```
+
+Example: run every 5 minutes
+
+```cron
+*/5 * * * * /usr/bin/env bash /absolute/path/UptimeKumaPush.sh >> /absolute/path/uptime-kuma-push.log 2>&1
+```
+
+Example: run every minute
+
+```cron
+* * * * * /usr/bin/env bash /absolute/path/UptimeKumaPush.sh >> /absolute/path/uptime-kuma-push.log 2>&1
+```
+
 ## Configuration Sample
 
 ```JSON
