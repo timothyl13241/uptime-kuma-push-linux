@@ -2,7 +2,7 @@
     "settings":{
         "push_url": "https://myuptimekuma.host/api/push/{ID}?status={STATUS}&msg={MSG}&ping={PING}", 
         "loop": false,
-        "loop_delay": "30",
+        "loop_delay": 30,
         "push_if_down": true
     
     },

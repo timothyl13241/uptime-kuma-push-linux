@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -u
+set -uo pipefail
 
 #==============================================================================
 # UptimeKumaPush.sh
@@ -29,45 +29,12 @@ urlencode() {
   printf '%s' "$encoded"
 }
 
-json_get() {
-  local filter="$1"
-  jq -r "$filter // empty" "$config_file" 2>/dev/null
-}
-
-json_bool() {
-  local filter="$1"
-  local value
-  value="$(jq -r "$filter // empty" "$config_file" 2>/dev/null)" || return 1
-  [[ "$value" == "true" ]]
-}
-
-get_timeout() {
-  local monitor_json="$1"
-  local default_timeout="$2"
-  local timeout
-  timeout="$(jq -r '.timeout // empty' <<<"$monitor_json")"
-  if [[ -n "$timeout" ]]; then
-    printf '%s' "$timeout"
-  else
-    printf '%s' "$default_timeout"
+require_command() {
+  local command_name="$1"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "Missing required dependency: $command_name" >&2
+    return 1
   fi
-}
-
-get_search() {
-  local monitor_json="$1"
-  jq -r '.search // empty' <<<"$monitor_json"
-}
-
-monitor_host() {
-  jq -r '.host // empty' <<<"$1"
-}
-
-monitor_type() {
-  jq -r '.type // empty' <<<"$1"
-}
-
-monitor_id() {
-  jq -r '.id // empty' <<<"$1"
 }
 
 normalize_host() {
@@ -79,178 +46,249 @@ normalize_host() {
   fi
 }
 
-curl_status_code() {
-  local url="$1"
-  local timeout="$2"
-  local response
-  response="$(curl -ksS -o /dev/null -w '%{http_code}' --max-time "$timeout" "$url" 2>/dev/null || true)"
-  [[ "$response" =~ ^[0-9]+$ ]] && [[ "$response" != "000" ]]
-}
-
-Test_Port() {
+get_timeout_ms() {
   local monitor_json="$1"
-  local host port timeout
-  host="$(monitor_host "$monitor_json")"
-  port="$(jq -r '.port // empty' <<<"$monitor_json")"
-  timeout="$(get_timeout "$monitor_json" 2000)"
-  timeout=$(( (timeout + 999) / 1000 ))
-  timeout=${timeout:-2}
+  local default_timeout="$2"
+  local timeout
+  timeout="$(jq -r '.timeout // empty' <<<"$monitor_json")"
 
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$timeout" bash -lc "</dev/tcp/${host}/${port}" >/dev/null 2>&1
+  if [[ "$timeout" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$timeout"
   else
-    python3 - <<'PY' "$host" "$port" "$timeout"
-import socket, sys
-host, port, timeout = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-s = socket.socket()
-s.settimeout(timeout)
-try:
-    s.connect((host, port))
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-finally:
-    s.close()
-PY
+    printf '%s' "$default_timeout"
   fi
 }
 
-Test_Ping() {
+get_timeout_seconds() {
   local monitor_json="$1"
-  local host timeout
-  host="$(monitor_host "$monitor_json")"
-  timeout="$(get_timeout "$monitor_json" 2000)"
+  local default_timeout="$2"
+  local timeout
+  timeout="$(jq -r '.timeout // empty' <<<"$monitor_json")"
 
-  if command -v ping >/dev/null 2>&1; then
-    if ping -c 1 -W $(( (timeout + 999) / 1000 )) "$host" >/dev/null 2>&1; then
-      printf '1'
-      return 0
-    fi
+  if [[ "$timeout" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$timeout"
+  else
+    printf '%s' "$default_timeout"
   fi
+}
+
+test_port() {
+  local monitor_json="$1"
+  local host port timeout_ms timeout_seconds
+
+  host="$(jq -r '.host // empty' <<<"$monitor_json")"
+  port="$(jq -r '.port // empty' <<<"$monitor_json")"
+  timeout_ms="$(get_timeout_ms "$monitor_json" 2000)"
+  timeout_seconds=$(( (timeout_ms + 999) / 1000 ))
+  (( timeout_seconds < 1 )) && timeout_seconds=1
+
+  [[ -n "$host" && "$port" =~ ^[0-9]+$ ]] || return 1
+
+  timeout "$timeout_seconds" bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1
+}
+
+test_ping() {
+  local monitor_json="$1"
+  local host timeout_ms timeout_seconds ping_output response_time
+
+  host="$(jq -r '.host // empty' <<<"$monitor_json")"
+  timeout_ms="$(get_timeout_ms "$monitor_json" 2000)"
+  timeout_seconds=$(( (timeout_ms + 999) / 1000 ))
+  (( timeout_seconds < 1 )) && timeout_seconds=1
+
+  [[ -n "$host" ]] || return 1
+
+  ping_output="$(ping -c 1 -W "$timeout_seconds" "$host" 2>/dev/null || true)"
+  if [[ -n "$ping_output" ]]; then
+    response_time="$(sed -nE 's/.*time=([0-9]+(\.[0-9]+)?).*/\1/p' <<<"$ping_output" | head -n1)"
+    if [[ -z "$response_time" ]]; then
+      response_time=1
+    else
+      response_time="${response_time%.*}"
+      [[ -z "$response_time" ]] && response_time=1
+    fi
+    printf '%s' "$response_time"
+    return 0
+  fi
+
   return 1
 }
 
-Test_Website() {
+test_website() {
   local monitor_json="$1"
-  local host search timeout content
-  search="$(get_search "$monitor_json")"
-  host="$(normalize_host "$(monitor_host "$monitor_json")")"
-  timeout="$(jq -r '.timeout // 4' <<<"$monitor_json")"
+  local host search timeout_seconds response_file status_code
 
-  content="$(curl -ksS --max-time "$timeout" "$host" 2>/dev/null || true)"
-  [[ -n "$content" ]] || return 1
-  if [[ -n "$search" ]]; then
-    [[ "$content" == *"$search"* ]]
-  else
-    return 0
+  search="$(jq -r '.search // empty' <<<"$monitor_json")"
+  host="$(normalize_host "$(jq -r '.host // empty' <<<"$monitor_json")")"
+  timeout_seconds="$(get_timeout_seconds "$monitor_json" 4)"
+
+  [[ -n "$host" ]] || return 1
+
+  response_file="$(mktemp)"
+  status_code="$(curl -ksS -L --max-time "$timeout_seconds" -o "$response_file" -w '%{http_code}' "$host" 2>/dev/null || echo 000)"
+
+  if [[ "$status_code" == "000" ]]; then
+    rm -f "$response_file"
+    return 1
   fi
+
+  if [[ -n "$search" ]]; then
+    if ! grep -Fq "$search" "$response_file"; then
+      rm -f "$response_file"
+      return 1
+    fi
+  fi
+
+  rm -f "$response_file"
+  return 0
 }
 
-Test_Host() {
+test_host() {
   local monitor_json="$1"
-  local type result
-  type="$(monitor_type "$monitor_json")"
+  local monitor_type monitor_host result=1 ping_value=0
 
-  case "$type" in
-    ping) result="$(Test_Ping "$monitor_json" || true)" ;;
-    website) Test_Website "$monitor_json"; result=$? ;;
-    port) Test_Port "$monitor_json"; result=$? ;;
-    *) result=1 ;;
+  monitor_type="$(jq -r '.type // empty' <<<"$monitor_json")"
+  monitor_host="$(jq -r '.host // empty' <<<"$monitor_json")"
+
+  case "$monitor_type" in
+    ping)
+      if ping_value="$(test_ping "$monitor_json")"; then
+        result=0
+      fi
+      ;;
+    website)
+      if test_website "$monitor_json"; then
+        result=0
+      fi
+      ;;
+    port)
+      if test_port "$monitor_json"; then
+        result=0
+      fi
+      ;;
+    *)
+      result=1
+      ;;
   esac
 
-  if [[ "$result" == 0 || -n "$result" ]]; then
-    echo "Up:   $(jq -c '.' <<<"$monitor_json")"
+  if (( result == 0 )); then
+    echo "Up:   $(jq -c '.' <<<"$monitor_json")" >&2
   else
-    echo "Down: $(jq -c '.' <<<"$monitor_json")"
+    echo "Down: $(jq -c '.' <<<"$monitor_json")" >&2
   fi
 
-  if [[ "$type" == "ping" && -n "$result" ]]; then
-    printf '%s' "$result"
-  else
-    return "$result"
-  fi
+  printf '%s|%s|%s:%s\n' "$result" "$ping_value" "$monitor_type" "$monitor_host"
 }
+
+require_command jq || exit 1
+require_command curl || exit 1
 
 while true; do
   if [[ ! -f "$config_file" ]]; then
-    echo "Config issue"
+    echo "Config issue: missing $config_file" >&2
     sleep 2
     continue
   fi
 
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "jq is required"
-    exit 1
+  if ! jq -e '.' "$config_file" >/dev/null 2>&1; then
+    echo "Config issue: invalid JSON in $config_file" >&2
+    sleep 2
+    continue
+  fi
+
+  if jq -e '.monitors[]? | select((.type // "") == "ping" or any((.group // [])[]?; (.type // "") == "ping"))' "$config_file" >/dev/null 2>&1; then
+    require_command ping || exit 1
+  fi
+
+  if jq -e '.monitors[]? | select((.type // "") == "port" or any((.group // [])[]?; (.type // "") == "port"))' "$config_file" >/dev/null 2>&1; then
+    require_command timeout || exit 1
   fi
 
   monitors_count="$(jq '.monitors | length' "$config_file" 2>/dev/null || echo 0)"
   echo "Total monitors: ${monitors_count}"
 
   push_url="$(jq -r '.settings.push_url // empty' "$config_file")"
-  push_if_down="$(jq -r '.settings.push_if_down // true' "$config_file")"
-  loop_enabled="$(jq -r '.settings.loop // true' "$config_file")"
+  push_if_down="$(jq -r 'if .settings | has("push_if_down") then .settings.push_if_down else true end' "$config_file")"
+  loop_enabled="$(jq -r 'if .settings | has("loop") then .settings.loop else true end' "$config_file")"
   loop_delay="$(jq -r '.settings.loop_delay // 60' "$config_file")"
 
-  jq -c '.monitors[]' "$config_file" | while IFS= read -r monitor; do
+  if [[ -z "$push_url" ]]; then
+    echo "Config issue: settings.push_url is required" >&2
+    sleep 2
+    continue
+  fi
+
+  if ! [[ "$loop_delay" =~ ^[0-9]+$ ]]; then
+    echo "Config issue: settings.loop_delay must be a non-negative integer" >&2
+    sleep 2
+    continue
+  fi
+
+  while IFS= read -r monitor; do
+    [[ -n "$monitor" ]] || continue
+
     message=""
     ping=0
     result=1
+    monitor_id_val="$(jq -r '.id // empty' <<<"$monitor")"
 
     if jq -e '.group? and (.group | length > 0)' >/dev/null <<<"$monitor"; then
       result=0
       down_message=""
       up_message=""
-      monitor_id_val="$(monitor_id "$monitor")"
       group_count="$(jq '.group | length' <<<"$monitor")"
       echo "Group Monitor: id=${monitor_id_val} count=${group_count}"
 
-      jq -c '.group[]' <<<"$monitor" | while IFS= read -r groupmonitor; do
-        if ! member_result="$(Test_Host "$groupmonitor" 2>/dev/null)"; then
-          result=1
-          down_message+="$(monitor_type "$groupmonitor"):$((monitor_host "$groupmonitor"))  "
-        else
-          up_message+="$(monitor_type "$groupmonitor"):$((monitor_host "$groupmonitor"))  "
-        fi
-      done
+      while IFS= read -r groupmonitor; do
+        [[ -n "$groupmonitor" ]] || continue
 
-      [[ -n "$down_message" ]] && message+="Down: ${down_message}"
-      [[ -n "$up_message" ]] && message+="Up: ${up_message}"
-    else
-      if output="$(Test_Host "$monitor" 2>&1)"; then
-        result=0
-        if [[ "$output" =~ ^[0-9.]+$ ]]; then
-          ping="$output"
+        host_result="$(test_host "$groupmonitor")"
+        member_result="${host_result%%|*}"
+        member_message="${host_result#*|}"
+        member_message="${member_message#*|}"
+
+        if [[ "$member_result" == "0" ]]; then
+          up_message+="${member_message}  "
+        else
+          result=1
+          down_message+="${member_message}  "
         fi
-      else
-        result=1
-      fi
-      message="$(monitor_type "$monitor"):$(monitor_host "$monitor")"
+      done < <(jq -c '.group[]' <<<"$monitor")
+
+      [[ -n "$down_message" ]] && down_message="Down: ${down_message}"
+      [[ -n "$up_message" ]] && up_message="Up: ${up_message}"
+      message="${down_message}${up_message}"
+    else
+      host_result="$(test_host "$monitor")"
+      result="${host_result%%|*}"
+      ping_part="${host_result#*|}"
+      ping="${ping_part%%|*}"
+      message="${host_result#*|}"
+      message="${message#*|}"
     fi
 
-    if [[ "$result" -eq 1 && "$push_if_down" == "false" ]]; then
+    if [[ "$result" == "1" && "$push_if_down" == "false" ]]; then
       continue
     fi
 
-    if [[ "$result" -eq 0 ]]; then
+    if [[ "$result" == "0" ]]; then
       status="up"
     else
       status="down"
     fi
 
     message_encoded="$(urlencode "$message")"
-    push_url_updated="${push_url//\{ID\}/$(monitor_id "$monitor") }"
+    push_url_updated="${push_url//\{ID\}/$monitor_id_val}"
     push_url_updated="${push_url_updated//\{STATUS\}/$status}"
     push_url_updated="${push_url_updated//\{MSG\}/$message_encoded}"
     push_url_updated="${push_url_updated//\{PING\}/$ping}"
-
-    push_url_updated="${push_url_updated// /}"
 
     if webrequest="$(curl -ksS "$push_url_updated" 2>&1)"; then
       echo "Push Response: $webrequest"
     else
       echo "Push Error: $webrequest"
     fi
-  done
+  done < <(jq -c '.monitors[]?' "$config_file")
 
   if [[ "$loop_enabled" == "false" ]]; then
     exit 0
