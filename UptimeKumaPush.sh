@@ -219,6 +219,12 @@ while true; do
     continue
   fi
 
+  if [[ "$loop_enabled" == "true" && "$loop_delay" == "0" ]]; then
+    echo "Config issue: settings.loop_delay must be greater than 0 when loop is enabled" >&2
+    sleep 2
+    continue
+  fi
+
   while IFS= read -r monitor; do
     [[ -n "$monitor" ]] || continue
 
