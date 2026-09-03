@@ -1,22 +1,81 @@
 # Uptime Kuma Push
 
-This is a PowerShell script that you can use with Uptime Kuma's push feature for monitoring servers on a network Uptime Kuma can't communicate with. Example: Your Uptime Kuma server is in the cloud but you want to monitor servers and devices on your local network.
+This repository includes both a PowerShell script (`UptimeKumaPush.ps1`) and a Bash script (`UptimeKumaPush.sh`) that you can use with Uptime Kuma's push feature for monitoring servers on a network Uptime Kuma can't communicate with. Example: Your Uptime Kuma server is in the cloud but you want to monitor servers and devices on your local network.
 
 Find out more about Uptime Kuma: https://github.com/louislam/uptime-kuma
 
 ## Features
 
-* All configuration is done in UptimeKumaPush.json
+* All configuration is done in `UptimeKumaPush.json`
 * Multiple distinct monitors
 * Group monitors so that if any one child monitor fails it reports back to the single Uptime Kuma monitor
 * Set the script to loop or use your scheduled task to re-run the script
 
-## Setup
+## Setup (PowerShell or Bash)
 
 1. Create one or more push monitors in Uptime Kuma and make note of the "Push URL" after saving the monitor, this will go in the configuration (with some modifications)
-2. Copy the script and example json configuration file to your preferred location on a server or machine that will always be running, make sure the .ps1 file and .json file have the same name
+2. Copy your chosen script and the example json configuration file to your preferred location on a server or machine that will always be running, and make sure the script file and `.json` file have the same base name (for this repo: `UptimeKumaPush.sh`/`UptimeKumaPush.ps1` + `UptimeKumaPush.json`)
 3. Edit the configuration with the monitors you want to use, use the example file to see what options you have and where to place data
 4. Setup a scheduled task to run the script at your preferred interval or on startup (this will depend on your monitor setup on Uptime Kuma, please read about the 'loop' setting)
+
+## Running on Linux (Bash)
+
+The Bash script is `UptimeKumaPush.sh`.
+
+### Dependencies
+
+Install required tools:
+
+* `jq` (JSON parsing)
+* `curl` (sending push requests, website checks)
+* `ping` (ICMP monitor checks)
+* `timeout` (port-check timeout handling, provided by GNU coreutils on most Linux distros)
+
+Example install command (Debian/Ubuntu):
+
+```bash
+sudo apt-get update && sudo apt-get install -y jq curl iputils-ping coreutils
+```
+
+### Config filename
+
+The script loads a JSON file from the same directory using the script basename:
+
+* `UptimeKumaPush.sh` -> `UptimeKumaPush.json`
+
+### Run
+
+```bash
+chmod +x ./UptimeKumaPush.sh
+./UptimeKumaPush.sh
+```
+
+### Run using crontab (interval scheduling)
+
+Yes — the Bash script can be run from `cron`.
+
+Recommended settings for cron use:
+
+* Set `"loop": false` in `UptimeKumaPush.json` so each cron run executes once and exits.
+* Use absolute paths in the crontab entry.
+
+Open crontab:
+
+```bash
+crontab -e
+```
+
+Example: run every 5 minutes
+
+```cron
+*/5 * * * * /usr/bin/env bash /absolute/path/UptimeKumaPush.sh >> /absolute/path/uptime-kuma-push.log 2>&1
+```
+
+Example: run every minute
+
+```cron
+* * * * * /usr/bin/env bash /absolute/path/UptimeKumaPush.sh >> /absolute/path/uptime-kuma-push.log 2>&1
+```
 
 ## Configuration Sample
 
@@ -25,14 +84,14 @@ Find out more about Uptime Kuma: https://github.com/louislam/uptime-kuma
     "settings":{
         "push_url": "https://myuptimekuma.host/api/push/{ID}?status={STATUS}&msg={MSG}&ping={PING}", 
         "loop": false,
-        "loop_delay": "30",
+        "loop_delay": 30,
         "push_if_down": true
     },
     "monitors":[
         {"id": "2e7mMkKP873", "type": "ping", "host": "10.0.0.20"},
         {"id": "GSgX3MyQ5T7", "group":[
             {"type": "website", "host": "https://internal-site.domain.com", "search": "Welcome to our internal home page"},
-            {"type": "port", "host": "10.0.0.30", "port": 22},
+            {"type": "port", "host": "10.0.0.30", "port": 22}
         ]
     }
     ]
@@ -65,6 +124,12 @@ The "loop" setting, if true, will restart the tests forever and use loop_delay (
 ### Push_If_Down
 
 The setting "push_if_down", if true, will send a notification to Uptime Kuma when a test fails, this is the default and doesn't need to be changed normally. If you set this to false, Uptime Kuma will not get a notification but the heartbeat/retries settings on Uptime Kuma will still determine an issue exists.
+
+## PowerShell vs Bash notes
+
+* Both scripts use the same JSON structure and `{ID}`, `{STATUS}`, `{MSG}`, `{PING}` push URL templating.
+* Bash requires Linux command-line dependencies (`jq`, `curl`, `ping`, `timeout`) instead of PowerShell cmdlets.
+* Website host values without `http://` or `https://` are treated as `https://...` in both versions.
 
 ## Configuration Monitors
 
