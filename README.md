@@ -130,6 +130,7 @@ The setting "push_if_down", if true, will send a notification to Uptime Kuma whe
 * Both scripts use the same JSON structure and `{ID}`, `{STATUS}`, `{MSG}`, `{PING}` push URL templating.
 * Bash requires Linux command-line dependencies (`jq`, `curl`, `ping`, `timeout`) instead of PowerShell cmdlets.
 * Website host values without `http://` or `https://` are treated as `https://...` in both versions.
+* In Bash, website checks send curl response time (milliseconds) to `{PING}`.
 
 ## Configuration Monitors
 

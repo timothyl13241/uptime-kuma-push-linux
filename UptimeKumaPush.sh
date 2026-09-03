@@ -103,7 +103,7 @@ test_ping() {
 
 test_website() {
   local monitor_json="$1"
-  local host search timeout_seconds response_file status_code
+  local host search timeout_seconds response_file curl_stats status_code time_total response_time_ms seconds_part fraction_part fraction_ms
 
   search="$(jq -r '.search // empty' <<<"$monitor_json")"
   host="$(normalize_host "$(jq -r '.host // empty' <<<"$monitor_json")")"
@@ -112,7 +112,9 @@ test_website() {
   [[ -n "$host" ]] || return 1
 
   response_file="$(mktemp)"
-  status_code="$(curl -ksS -L --max-time "$timeout_seconds" -o "$response_file" -w '%{http_code}' "$host" 2>/dev/null || echo 000)"
+  curl_stats="$(curl -ksS -L --max-time "$timeout_seconds" -o "$response_file" -w '%{http_code}|%{time_total}' "$host" 2>/dev/null || echo '000|0')"
+  status_code="${curl_stats%%|*}"
+  time_total="${curl_stats#*|}"
 
   if [[ "$status_code" == "000" ]]; then
     rm -f "$response_file"
@@ -126,7 +128,22 @@ test_website() {
     fi
   fi
 
+  if [[ "$time_total" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    seconds_part="${time_total%%.*}"
+    fraction_part="${time_total#*.}"
+    if [[ "$fraction_part" == "$time_total" ]]; then
+      fraction_part="0"
+    fi
+    fraction_part="${fraction_part}000"
+    fraction_ms="${fraction_part:0:3}"
+    response_time_ms=$((10#$seconds_part * 1000 + 10#$fraction_ms))
+  else
+    response_time_ms=1
+  fi
+  (( response_time_ms < 1 )) && response_time_ms=1
+
   rm -f "$response_file"
+  printf '%s' "$response_time_ms"
   return 0
 }
 
@@ -144,8 +161,10 @@ test_host() {
       fi
       ;;
     website)
-      if test_website "$monitor_json"; then
+      if ping_value="$(test_website "$monitor_json")"; then
         result=0
+      else
+        ping_value=0
       fi
       ;;
     port)
